@@ -1,0 +1,42 @@
+name: Download Dukascopy ticks
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: "Symbol (e.g. EURUSD)"
+        required: true
+        default: "EURUSD"
+      start:
+        description: "Start date (YYYY-MM-DD)"
+        required: true
+      end:
+        description: "End date (YYYY-MM-DD)"
+        required: true
+      workers:
+        description: "Concurrent workers (max 64)"
+        required: false
+        default: "15"
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests orjson   # fastapi/uvicorn فقط برای web UI لازم‌اند
+
+      - name: Download ticks
+        run: python main.py download "${{ inputs.symbol }}" "${{ inputs.start }}" "${{ inputs.end }}" --workers ${{ inputs.workers }}
+
+      - name: Upload data as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ticks-${{ inputs.symbol }}-${{ inputs.start }}_${{ inputs.end }}
+          path: data/
+          retention-days: 7
