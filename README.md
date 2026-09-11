@@ -43,8 +43,8 @@ python main.py download EURUSD 2025-01-01 2025-06-30
 
 # Merge the downloaded range into one MT5-ready pack and upload it to a
 # GitHub release — works for any range, e.g. daily or monthly:
-#   2025-01-15 .. 2025-01-15  ->  EURUSD_2025-01-15.BIN  (release EURUSD-2025-01-15)
-#   2025-01-01 .. 2025-01-31  ->  EURUSD_2025-01.BIN     (release EURUSD-2025-01)
+#   2025-01-15 .. 2025-01-15  ->  EURUSD_2025-01-15.BIN -> EURUSD_2025-01-15.zip
+#   2025-01-01 .. 2025-01-31  ->  EURUSD_2025-01.BIN    -> EURUSD_2025-01.zip
 # Needs GITHUB_TOKEN and --repo owner/name (or GITHUB_REPOSITORY,
 # both set automatically in the bundled GitHub Actions workflow).
 python main.py download EURUSD 2025-01-15 2025-01-15 --upload-release
@@ -79,15 +79,16 @@ python main.py status EURUSD
 uploads it to a GitHub release. `--yearly` additionally splits a multi-year
 range into one pack per calendar year. Pack names follow the period covered:
 
-| requested range                 | pack file                  | release tag           |
-| ------------------------------- | -------------------------- | --------------------- |
-| full year 2025                  | `EURUSD_2025.BIN`          | `EURUSD-2025`         |
-| full month Jan 2025             | `EURUSD_2025-01.BIN`       | `EURUSD-2025-01`      |
-| single day 2025-01-15           | `EURUSD_2025-01-15.BIN`    | `EURUSD-2025-01-15`   |
-| any other range                 | `EURUSD_<start>_<end>.BIN` | `EURUSD-<start>_<end>` |
+| requested range                 | pack file                  | zip asset            | release tag           |
+| ------------------------------- | -------------------------- | -------------------- | --------------------- |
+| full year 2025                  | `EURUSD_2025.BIN`          | `EURUSD_2025.zip`    | `EURUSD-2025`         |
+| full month Jan 2025             | `EURUSD_2025-01.BIN`       | `EURUSD_2025-01.zip` | `EURUSD-2025-01`      |
+| single day 2025-01-15           | `EURUSD_2025-01-15.BIN`    | `EURUSD_2025-01-15.zip` | `EURUSD-2025-01-15` |
+| any other range                 | `EURUSD_<start>_<end>.BIN` | `EURUSD_<start>_<end>.zip` | `EURUSD-<start>_<end>` |
 
-Packs are written to `data/yearly/` and zipped as `<pack>.zip` for upload;
-re-running the same period replaces the release asset. Notes:
+Packs are written to `data/yearly/`; the zip (`.BIN` suffix dropped, e.g.
+`EURUSD_2025.zip`) is what gets uploaded. Re-running the same period replaces
+the release asset. Notes:
 
 - Auth: `GITHUB_TOKEN` with contents write access; the repository comes from
   `--repo owner/name` or `GITHUB_REPOSITORY` (both automatic in the workflow).
@@ -146,5 +147,5 @@ config/          settings, instruments.json
 cli/             commands
 scripts/         migrate_parquet_to_bin.py
 data/            binary tick store + SQLite ledger   (created at runtime)
-data/yearly/     merged period packs (<SYMBOL>_<PERIOD>.BIN) + .zip for releases
+data/yearly/     merged period packs <SYMBOL>_<PERIOD>.BIN (+ <SYMBOL>_<PERIOD>.zip)
 ```

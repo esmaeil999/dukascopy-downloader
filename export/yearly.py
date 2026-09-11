@@ -10,6 +10,8 @@ Pack naming follows the period covered:
     full calendar month  -> <SYMBOL>_<YEAR>-<MM>.BIN    (EURUSD_2025-01.BIN)
     single day           -> <SYMBOL>_<YYYY-MM-DD>.BIN   (EURUSD_2025-01-15.BIN)
     any other range      -> <SYMBOL>_<START>_<END>.BIN
+
+Zip naming drops the .BIN suffix: EURUSD_2025.BIN -> EURUSD_2025.zip
 """
 from __future__ import annotations
 
@@ -108,8 +110,11 @@ def merge_year(
 
 
 def zip_yearly_bin(bin_path: Path) -> Path:
-    """Zip a pack BIN -> <name>.zip (atomically, same directory)."""
-    zip_path = bin_path.parent / (bin_path.name + ".zip")
+    """Zip a pack BIN -> <SYMBOL>_<PERIOD>.zip (atomically, same directory).
+
+    The .BIN suffix is dropped: EURUSD_2025.BIN -> EURUSD_2025.zip.
+    """
+    zip_path = bin_path.with_suffix(".zip")
     tmp_path = zip_path.with_name(zip_path.name + ".tmp")
     with zipfile.ZipFile(
         tmp_path,
