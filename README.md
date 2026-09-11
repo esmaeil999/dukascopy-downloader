@@ -50,6 +50,10 @@ python main.py download EURUSD 2025-01-01 2025-06-30
 python main.py download EURUSD 2025-01-15 2025-01-15 --upload-release
 python main.py download EURUSD 2025-01-01 2025-01-31 --upload-release
 
+# Optionally also post the pack to a Telegram channel via a bot
+# (TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID env vars):
+python main.py download EURUSD 2025-01-15 2025-01-15 --upload-release --notify-telegram
+
 # Yearly mode: a multi-year range is processed one calendar year at a time;
 # each finished year is merged into its own pack:
 #   data/yearly/EURUSD_2015.BIN, data/yearly/EURUSD_2016.BIN, ...
@@ -71,7 +75,8 @@ python main.py status EURUSD
 ```
 
 `download` options: `--workers N` (default 15, max 64), `--force`, `--profile`,
-`--yearly`, `--upload-release`, `--repo owner/name`, `--min-lag-hours N`
+`--yearly`, `--upload-release`, `--repo owner/name`, `--min-lag-hours N`,
+`--notify-telegram`
 
 ## Period packs & GitHub releases
 
@@ -123,6 +128,24 @@ the zip to a release automatically:
   limited disk) and the 2 GB per-asset release limit for very liquid symbols —
   run heavy yearly jobs locally if needed.
 
+## Telegram channel notifications
+
+The scheduled workflow can also post each finished pack to a **Telegram
+channel** via a bot (`--notify-telegram`, wired only into
+`scheduled-sync.yml`):
+
+- Packs up to ~49 MB are uploaded to the channel as files; larger packs fall
+  back to a message with the GitHub release download link (the Bot API upload
+  limit is 50 MB).
+- One-time setup:
+  1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token.
+  2. Add the bot to your channel as an administrator (post permission).
+  3. Get the channel id (like `-1001234567890`) or use `@channel_username`.
+  4. Add repository secrets (Settings -> Secrets and variables -> Actions):
+     `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+- If the secrets are not set, the workflow logs a note and skips Telegram —
+  downloads and releases are unaffected.
+
 ## How it works
 
 ```
@@ -166,7 +189,8 @@ core/
   services/      instrument_search, planner, download_engine,
                  retry_manager, decoder, verification, gap_scanner
 storage/         tick_storage, tick_format, metadata_db, parquet_migration
-export/          yearly, github_release, mt5_tick_publisher, mt5_importer
+export/          yearly, github_release, telegram_notify,
+                 mt5_tick_publisher, mt5_importer
 mt5/             DukascopyTickImport.mq5
 config/          settings, instruments.json
 cli/             commands

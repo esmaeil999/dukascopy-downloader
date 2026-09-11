@@ -1,7 +1,10 @@
 name: Scheduled tick sync (daily/weekly/monthly/yearly)
 
 # Four schedules, all at 00:05 UTC (GMT+0). Each finished period is merged
-# into one pack and uploaded to a GitHub release automatically.
+# into one pack and uploaded to a GitHub release automatically. If the
+# TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID secrets are set, the pack is also
+# posted to a Telegram channel by a bot (files up to ~49 MB; larger packs
+# fall back to a message with the release download link).
 #   daily   -> yesterday (full day)
 #   weekly  -> last Monday 00:00 .. this Monday 00:00
 #   monthly -> last full calendar month
@@ -70,14 +73,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SYMBOLS: ${{ inputs.symbols || env.DEFAULT_SYMBOLS }}
         run: |
           rc=0
+          EXTRA_ARGS="--upload-release --min-lag-hours 0"
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --notify-telegram"
+          else
+            echo "Telegram secrets not set — skipping channel notification"
+          fi
           for sym in $SYMBOLS; do
             echo "=== $sym ${{ steps.dates.outputs.start }} -> ${{ steps.dates.outputs.end }} ==="
             python main.py download "$sym" \
               "${{ steps.dates.outputs.start }}" "${{ steps.dates.outputs.end }}" \
-              --workers 15 --upload-release --min-lag-hours 0 || rc=1
+              --workers 15 $EXTRA_ARGS || rc=1
           done
           exit $rc
 
@@ -110,14 +121,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SYMBOLS: ${{ inputs.symbols || env.DEFAULT_SYMBOLS }}
         run: |
           rc=0
+          EXTRA_ARGS="--upload-release --min-lag-hours 0"
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --notify-telegram"
+          else
+            echo "Telegram secrets not set — skipping channel notification"
+          fi
           for sym in $SYMBOLS; do
             echo "=== $sym ${{ steps.dates.outputs.start }} -> ${{ steps.dates.outputs.end }} ==="
             python main.py download "$sym" \
               "${{ steps.dates.outputs.start }}" "${{ steps.dates.outputs.end }}" \
-              --workers 15 --upload-release --min-lag-hours 0 || rc=1
+              --workers 15 $EXTRA_ARGS || rc=1
           done
           exit $rc
 
@@ -149,14 +168,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SYMBOLS: ${{ inputs.symbols || env.DEFAULT_SYMBOLS }}
         run: |
           rc=0
+          EXTRA_ARGS="--upload-release --min-lag-hours 0"
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --notify-telegram"
+          else
+            echo "Telegram secrets not set — skipping channel notification"
+          fi
           for sym in $SYMBOLS; do
             echo "=== $sym ${{ steps.dates.outputs.start }} -> ${{ steps.dates.outputs.end }} ==="
             python main.py download "$sym" \
               "${{ steps.dates.outputs.start }}" "${{ steps.dates.outputs.end }}" \
-              --workers 15 --upload-release --min-lag-hours 0 || rc=1
+              --workers 15 $EXTRA_ARGS || rc=1
           done
           exit $rc
 
@@ -188,13 +215,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SYMBOLS: ${{ inputs.symbols || env.DEFAULT_SYMBOLS }}
         run: |
           rc=0
+          EXTRA_ARGS="--upload-release --min-lag-hours 0"
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --notify-telegram"
+          else
+            echo "Telegram secrets not set — skipping channel notification"
+          fi
           for sym in $SYMBOLS; do
             echo "=== $sym ${{ steps.dates.outputs.start }} -> ${{ steps.dates.outputs.end }} ==="
             python main.py download "$sym" \
               "${{ steps.dates.outputs.start }}" "${{ steps.dates.outputs.end }}" \
-              --workers 15 --upload-release --min-lag-hours 0 || rc=1
+              --workers 15 $EXTRA_ARGS || rc=1
           done
           exit $rc
