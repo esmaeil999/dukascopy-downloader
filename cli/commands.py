@@ -2,6 +2,7 @@
 
     python main.py search <text>
     python main.py download <SYMBOL> <START> <END> [--workers N] [--force] [--profile]
+    python main.py download <SYMBOL> <START> <END> --yearly [--upload-release] [--repo owner/name]
     python main.py gaps     <SYMBOL> <START> <END> [--repair]
     python main.py gaps     <SYMBOL> --all [--repair]
     python main.py status   <SYMBOL>
@@ -14,14 +15,17 @@ import argparse
 import sys
 import threading
 from datetime import date, datetime
+from pathlib import Path
 
 from config.settings import Settings
+from core.models.instrument import Instrument
 from core.models.task import TaskStatus
 from core.services.download_engine import DownloadEngine
 from core.services.gap_scanner import GapScanner
 from core.services.instrument_search import InstrumentCatalog, UnknownInstrumentError
 from core.services.planner import Planner
 from core.services.profile_format import format_profile_line
+from export.yearly import merge_year, yearly_output_dir, zip_yearly_bin
 from storage.metadata_db import MetadataDB, _hour_key
 from storage.tick_storage import TickStorage
 
@@ -61,6 +65,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_download.add_argument(
         "--profile", action="store_true",
         help="print per-hour fetch/decode/write timings (ms)",
+    )
+    p_download.add_argument(
+        "--yearly", action="store_true",
+        help="split the range into calendar years; after each year completes, "
+             "merge its hour files into one data/yearly/<SYMBOL>_<YEAR>.BIN",
+    )
+    p_download.add_argument(
+        "--upload-release", action="store_true",
+        help="with --yearly: zip each yearly BIN and upload it to a GitHub "
+             "release (tag <SYMBOL>-<YEAR>); needs GITHUB_TOKEN plus --repo "
+             "or GITHUB_REPOSITORY",
+    )
+    p_download.add_argument(
+        "--repo", default=None,
+        help="GitHub repository as owner/name for --upload-release "
+             "(default: GITHUB_REPOSITORY env var)",
     )
 
     p_gaps = sub.add_parser("gaps", help="report (and optionally repair) missing hours")
@@ -139,9 +159,15 @@ def cmd_search(catalog: InstrumentCatalog, args) -> int:
     return 0
 
 
-def cmd_download(settings: Settings, catalog: InstrumentCatalog, args) -> int:
-    instrument = catalog.get(args.symbol)
-    _validate_range(args.start, args.end)
+def _run_download(
+    settings: Settings,
+    instrument: Instrument,
+    start: date,
+    end: date,
+    args,
+) -> int:
+    """Plan and download one date range (single-shot behaviour)."""
+    _validate_range(start, end)
     local_settings = settings.for_job(args.workers)
 
     db = MetadataDB(settings.db_path)
@@ -149,9 +175,7 @@ def cmd_download(settings: Settings, catalog: InstrumentCatalog, args) -> int:
     planner = Planner(local_settings, db)
     engine = DownloadEngine(local_settings, storage, db)
 
-    plan = planner.plan(instrument, args.start, args.end, force=args.force)
-    print(f"Instrument : {instrument.name} ({instrument.symbol}), "
-          f"{instrument.price_decimals} decimals")
+    plan = planner.plan(instrument, start, end, force=args.force)
     if plan.effective_start is None:
         print("Nothing to do: no downloadable hours in this range "
               "(check the instrument's data start date and the recent-data lag).")
@@ -185,9 +209,93 @@ def cmd_download(settings: Settings, catalog: InstrumentCatalog, args) -> int:
           f"{stats.failed} failed, {stats.ticks:,} ticks total.")
     if stats.failed:
         print("Some hours kept failing; run later:\n"
-              f"  python main.py gaps {instrument.symbol} {args.start} {args.end} --repair")
+              f"  python main.py gaps {instrument.symbol} {start} {end} --repair")
         return 1
     return 0
+
+
+def _run_download_yearly(settings: Settings, instrument: Instrument, args) -> int:
+    """Download a range one calendar year at a time, merging each finished year
+    into data/yearly/<SYMBOL>_<YEAR>.BIN and optionally publishing it."""
+    token = repo = None
+    if args.upload_release:
+        # Validate release credentials before starting hours of downloading.
+        from export.github_release import (
+            ReleaseUploadError,
+            resolve_repository,
+            resolve_token,
+        )
+
+        try:
+            token = resolve_token()
+            repo = resolve_repository(args.repo)
+        except ReleaseUploadError as exc:
+            raise SystemExit(f"error: {exc}")
+
+    storage = TickStorage(settings.data_dir)
+    out_dir = yearly_output_dir(settings.data_dir)
+    years = list(range(args.start.year, args.end.year + 1))
+    print(f"Yearly mode: {len(years)} year(s), {years[0]} -> {years[-1]}\n")
+
+    merged: list[Path] = []
+    failed = False
+    for year in years:
+        year_start = max(args.start, date(year, 1, 1))
+        year_end = min(args.end, date(year, 12, 31))
+        print(f"===== {instrument.symbol} {year}: {year_start} -> {year_end} =====")
+        if _run_download(settings, instrument, year_start, year_end, args):
+            failed = True
+
+        result = merge_year(storage, instrument, year, out_dir)
+        if result is None:
+            print(f"[{year}] no stored hours — skipping merge.\n")
+            continue
+        bin_path, tick_count = result
+        size_mb = bin_path.stat().st_size / (1024 * 1024)
+        print(f"[{year}] merged -> {bin_path.name} "
+              f"({tick_count:,} ticks, {size_mb:,.1f} MB)")
+        merged.append(bin_path)
+
+        if args.upload_release:
+            from export.github_release import (
+                ReleaseUploadError,
+                get_or_create_release,
+                upload_asset,
+            )
+
+            try:
+                zip_path = zip_yearly_bin(bin_path)
+                zip_mb = zip_path.stat().st_size / (1024 * 1024)
+                print(f"[{year}] zipped -> {zip_path.name} ({zip_mb:,.1f} MB)")
+                tag = f"{instrument.symbol}-{year}"
+                release = get_or_create_release(
+                    repo, tag, token,
+                    name=f"{instrument.symbol} {year} tick data",
+                )
+                url = upload_asset(repo, release, zip_path, token)
+                print(f"[{year}] uploaded -> {url or 'release ' + tag}\n")
+            except ReleaseUploadError as exc:
+                failed = True
+                print(f"[{year}] error: release upload failed: {exc}\n",
+                      file=sys.stderr)
+
+    print(f"\nYearly summary ({len(merged)} pack(s) in {out_dir}):")
+    for path in merged:
+        print(f"  {path.name}")
+    return 1 if failed else 0
+
+
+def cmd_download(settings: Settings, catalog: InstrumentCatalog, args) -> int:
+    instrument = catalog.get(args.symbol)
+    _validate_range(args.start, args.end)
+    print(f"Instrument : {instrument.name} ({instrument.symbol}), "
+          f"{instrument.price_decimals} decimals")
+    if not args.yearly:
+        if args.upload_release or args.repo:
+            print("warning: --upload-release/--repo only apply together with "
+                  "--yearly; ignoring them.", file=sys.stderr)
+        return _run_download(settings, instrument, args.start, args.end, args)
+    return _run_download_yearly(settings, instrument, args)
 
 
 def cmd_gaps(settings: Settings, catalog: InstrumentCatalog, args) -> int:
@@ -340,7 +448,7 @@ def cmd_web(args) -> int:
     )
 
     port = _resolve_web_port(args.host, args.port)
-    print(f"Web UI: http://{args.host}:{port}")
+    print(f"Web UI: {{http://{args.host}}}:{port}")
     uvicorn.run("web.app:app", host=args.host, port=port, reload=False)
     return 0
 
