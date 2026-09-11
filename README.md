@@ -41,6 +41,17 @@ python main.py search eurusd
 # Download ticks into binary hour files (resumable, concurrent, auto-retrying)
 python main.py download EURUSD 2025-01-01 2025-06-30
 
+# Yearly mode: a multi-year range is processed one calendar year at a time;
+# each finished year is merged into one MT5-ready file:
+#   data/yearly/EURUSD_2015.BIN, data/yearly/EURUSD_2016.BIN, ...
+python main.py download EURUSD 2015-01-01 2026-12-31 --yearly
+
+# Yearly + publish: additionally zip each yearly BIN and upload it to a
+# GitHub release (tag EURUSD-2015, asset EURUSD_2015.BIN.zip).
+# Needs GITHUB_TOKEN and --repo owner/name (or GITHUB_REPOSITORY,
+# both set automatically in the bundled GitHub Actions workflow).
+python main.py download EURUSD 2015-01-01 2026-12-31 --yearly --upload-release
+
 # One-time: convert legacy .parquet data to .bin
 python main.py migrate
 
@@ -56,7 +67,26 @@ python main.py gaps EURUSD --all --repair --refetch-empty   # also re-request em
 python main.py status EURUSD
 ```
 
-`download` options: `--workers N` (default 15, max 64), `--force`, `--profile`
+`download` options: `--workers N` (default 15, max 64), `--force`, `--profile`,
+`--yearly`, `--upload-release`, `--repo owner/name`
+
+## Yearly packs & GitHub releases
+
+`--yearly` splits a range into calendar years (2015-01-01 -> 2026-12-31 becomes
+2015, 2016, ..., 2026). After a year's hours finish downloading, they are merged
+byte-for-byte — still valid bin_v1 — into `data/yearly/<SYMBOL>_<YEAR>.BIN`.
+
+With `--upload-release`, each yearly BIN is zipped to
+`data/yearly/<SYMBOL>_<YEAR>.BIN.zip` and uploaded to a GitHub release tagged
+`<SYMBOL>-<YEAR>`; re-running the same year replaces the asset. Notes:
+
+- Auth: `GITHUB_TOKEN` with contents write access; the repository comes from
+  `--repo owner/name` or `GITHUB_REPOSITORY` (both automatic in the workflow).
+- GitHub limits release assets to **2 GB** per file; very liquid symbols can
+  exceed that for a full year — split such jobs into shorter ranges.
+- Long multi-year jobs can outgrow GitHub-hosted runner limits (~6 h per job,
+  limited disk). For 10+ years of a liquid symbol, run locally or launch the
+  workflow once per few years — every run is independent and resumable.
 
 ## How it works
 
@@ -101,10 +131,11 @@ core/
   services/      instrument_search, planner, download_engine,
                  retry_manager, decoder, verification, gap_scanner
 storage/         tick_storage, tick_format, metadata_db, parquet_migration
-export/          mt5_tick_publisher, mt5_importer
+export/          yearly, github_release, mt5_tick_publisher, mt5_importer
 mt5/             DukascopyTickImport.mq5
 config/          settings, instruments.json
 cli/             commands
 scripts/         migrate_parquet_to_bin.py
 data/            binary tick store + SQLite ledger   (created at runtime)
+data/yearly/     merged per-year packs <SYMBOL>_<YEAR>.BIN (+ .zip for releases)
 ```

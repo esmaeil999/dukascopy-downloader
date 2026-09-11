@@ -18,6 +18,9 @@ on:
         required: false
         default: "15"
 
+permissions:
+  contents: write   # GITHUB_TOKEN needs this to create releases
+
 jobs:
   download:
     runs-on: ubuntu-latest
@@ -31,12 +34,18 @@ jobs:
       - name: Install dependencies
         run: pip install requests orjson   # fastapi/uvicorn فقط برای web UI لازم‌اند
 
-      - name: Download ticks
-        run: python main.py download "${{ inputs.symbol }}" "${{ inputs.start }}" "${{ inputs.end }}" --workers ${{ inputs.workers }}
+      - name: Download year by year, merge, zip and upload releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: >-
+          python main.py download "${{ inputs.symbol }}" "${{ inputs.start }}"
+          "${{ inputs.end }}" --workers ${{ inputs.workers }} --yearly --upload-release
 
-      - name: Upload data as artifact
+      - name: Upload yearly packs as artifact
         uses: actions/upload-artifact@v4
         with:
           name: ticks-${{ inputs.symbol }}-${{ inputs.start }}_${{ inputs.end }}
-          path: data/
+          path: data/yearly/
+          if-no-files-found: ignore
           retention-days: 7
