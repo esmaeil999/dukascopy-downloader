@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 
@@ -81,6 +82,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--repo", default=None,
         help="GitHub repository as owner/name for --upload-release "
              "(default: GITHUB_REPOSITORY env var)",
+    )
+    p_download.add_argument(
+        "--min-lag-hours", type=int, default=None,
+        help="override the recent-data lag in hours (default 2 from settings). "
+             "Scheduled jobs pass 0: their end date is already in the past, and "
+             "the default lag would drop each period's final hour",
     )
 
     p_gaps = sub.add_parser("gaps", help="report (and optionally repair) missing hours")
@@ -169,6 +176,10 @@ def _run_download(
     """Plan and download one date range (single-shot behaviour)."""
     _validate_range(start, end)
     local_settings = settings.for_job(args.workers)
+    if getattr(args, "min_lag_hours", None) is not None:
+        local_settings = replace(
+            local_settings, min_data_lag_hours=args.min_lag_hours
+        )
 
     db = MetadataDB(settings.db_path)
     storage = TickStorage(settings.data_dir)

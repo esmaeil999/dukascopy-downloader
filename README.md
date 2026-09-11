@@ -71,7 +71,7 @@ python main.py status EURUSD
 ```
 
 `download` options: `--workers N` (default 15, max 64), `--force`, `--profile`,
-`--yearly`, `--upload-release`, `--repo owner/name`
+`--yearly`, `--upload-release`, `--repo owner/name`, `--min-lag-hours N`
 
 ## Period packs & GitHub releases
 
@@ -97,6 +97,31 @@ the release asset. Notes:
 - Long multi-year jobs can outgrow GitHub-hosted runner limits (~6 h per job,
   limited disk). For 10+ years of a liquid symbol, run locally or launch the
   workflow once per few years — every run is independent and resumable.
+
+## Scheduled sync (daily / weekly / monthly / yearly)
+
+`.github/workflows/scheduled-sync.yml` runs four schedules — all at **00:05 UTC
+(GMT+0)** — downloads the finished period, merges it into one pack and uploads
+the zip to a release automatically:
+
+| schedule | runs at (UTC) | period downloaded | example zip asset |
+| -------- | ------------- | ----------------- | ----------------- |
+| daily    | every day 00:05 | yesterday (full day) | `EURUSD_2026-09-10.zip` |
+| weekly   | Monday 00:05 | last Mon 00:00 -> this Mon 00:00 | `EURUSD_2026-09-07_2026-09-13.zip` |
+| monthly  | 1st of month 00:05 | last full month (1st 00:00 -> this 1st 00:00) | `EURUSD_2026-03.zip` |
+| yearly   | Jan 1 00:05 | last full year (Jan 1 00:00 -> this Jan 1 00:00) | `EURUSD_2026.zip` |
+
+- Symbols: edit `DEFAULT_SYMBOLS` in the workflow (space-separated) or pass
+  `symbols` on a manual run.
+- Manual runs / backfills: Actions -> "Scheduled tick sync" -> Run workflow,
+  pick the period and optionally override `start`/`end` with any range.
+- Scheduled runs pass `--min-lag-hours 0` because every period end is already
+  in the past — the default 2 h lag would otherwise drop each period's final
+  hour.
+- GitHub-hosted runners are ephemeral: each run starts with an empty data dir
+  and downloads the full period fresh. Watch runner limits (~6 h per job,
+  limited disk) and the 2 GB per-asset release limit for very liquid symbols —
+  run heavy yearly jobs locally if needed.
 
 ## How it works
 
