@@ -41,15 +41,18 @@ python main.py search eurusd
 # Download ticks into binary hour files (resumable, concurrent, auto-retrying)
 python main.py download EURUSD 2025-01-01 2025-06-30
 
-# Yearly mode: a multi-year range is processed one calendar year at a time;
-# each finished year is merged into one MT5-ready file:
-#   data/yearly/EURUSD_2015.BIN, data/yearly/EURUSD_2016.BIN, ...
-python main.py download EURUSD 2015-01-01 2026-12-31 --yearly
-
-# Yearly + publish: additionally zip each yearly BIN and upload it to a
-# GitHub release (tag EURUSD-2015, asset EURUSD_2015.BIN.zip).
+# Merge the downloaded range into one MT5-ready pack and upload it to a
+# GitHub release — works for any range, e.g. daily or monthly:
+#   2025-01-15 .. 2025-01-15  ->  EURUSD_2025-01-15.BIN  (release EURUSD-2025-01-15)
+#   2025-01-01 .. 2025-01-31  ->  EURUSD_2025-01.BIN     (release EURUSD-2025-01)
 # Needs GITHUB_TOKEN and --repo owner/name (or GITHUB_REPOSITORY,
 # both set automatically in the bundled GitHub Actions workflow).
+python main.py download EURUSD 2025-01-15 2025-01-15 --upload-release
+python main.py download EURUSD 2025-01-01 2025-01-31 --upload-release
+
+# Yearly mode: a multi-year range is processed one calendar year at a time;
+# each finished year is merged into its own pack:
+#   data/yearly/EURUSD_2015.BIN, data/yearly/EURUSD_2016.BIN, ...
 python main.py download EURUSD 2015-01-01 2026-12-31 --yearly --upload-release
 
 # One-time: convert legacy .parquet data to .bin
@@ -70,15 +73,21 @@ python main.py status EURUSD
 `download` options: `--workers N` (default 15, max 64), `--force`, `--profile`,
 `--yearly`, `--upload-release`, `--repo owner/name`
 
-## Yearly packs & GitHub releases
+## Period packs & GitHub releases
 
-`--yearly` splits a range into calendar years (2015-01-01 -> 2026-12-31 becomes
-2015, 2016, ..., 2026). After a year's hours finish downloading, they are merged
-byte-for-byte — still valid bin_v1 — into `data/yearly/<SYMBOL>_<YEAR>.BIN`.
+`--upload-release` merges the downloaded range into one pack, zips it, and
+uploads it to a GitHub release. `--yearly` additionally splits a multi-year
+range into one pack per calendar year. Pack names follow the period covered:
 
-With `--upload-release`, each yearly BIN is zipped to
-`data/yearly/<SYMBOL>_<YEAR>.BIN.zip` and uploaded to a GitHub release tagged
-`<SYMBOL>-<YEAR>`; re-running the same year replaces the asset. Notes:
+| requested range                 | pack file                  | release tag           |
+| ------------------------------- | -------------------------- | --------------------- |
+| full year 2025                  | `EURUSD_2025.BIN`          | `EURUSD-2025`         |
+| full month Jan 2025             | `EURUSD_2025-01.BIN`       | `EURUSD-2025-01`      |
+| single day 2025-01-15           | `EURUSD_2025-01-15.BIN`    | `EURUSD-2025-01-15`   |
+| any other range                 | `EURUSD_<start>_<end>.BIN` | `EURUSD-<start>_<end>` |
+
+Packs are written to `data/yearly/` and zipped as `<pack>.zip` for upload;
+re-running the same period replaces the release asset. Notes:
 
 - Auth: `GITHUB_TOKEN` with contents write access; the repository comes from
   `--repo owner/name` or `GITHUB_REPOSITORY` (both automatic in the workflow).
@@ -137,5 +146,5 @@ config/          settings, instruments.json
 cli/             commands
 scripts/         migrate_parquet_to_bin.py
 data/            binary tick store + SQLite ledger   (created at runtime)
-data/yearly/     merged per-year packs <SYMBOL>_<YEAR>.BIN (+ .zip for releases)
+data/yearly/     merged period packs (<SYMBOL>_<PERIOD>.BIN) + .zip for releases
 ```
