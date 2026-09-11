@@ -89,6 +89,12 @@ def _build_parser() -> argparse.ArgumentParser:
              "Scheduled jobs pass 0: their end date is already in the past, and "
              "the default lag would drop each period's final hour",
     )
+    p_download.add_argument(
+        "--notify-telegram", action="store_true",
+        help="after each pack, send it to a Telegram channel via a bot "
+             "(TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID env vars). Packs over the "
+             "50 MB bot upload limit fall back to a message with the release link",
+    )
 
     p_gaps = sub.add_parser("gaps", help="report (and optionally repair) missing hours")
     p_gaps.add_argument("symbol")
@@ -239,37 +245,72 @@ def _release_credentials(args):
         raise SystemExit(f"error: {exc}")
 
 
-def _publish_pack(args, token, repo, instrument, start, end, bin_path) -> bool:
-    """Zip one merged pack and upload it to its GitHub release."""
-    from export.github_release import (
-        ReleaseUploadError,
-        get_or_create_release,
-        upload_asset,
+def _telegram_credentials(args):
+    """Resolve and validate Telegram bot credentials before downloading."""
+    from export.telegram_notify import (
+        TelegramNotifyError,
+        resolve_bot_token,
+        resolve_chat_id,
     )
 
-    label = pack_label(start, end)
     try:
-        zip_path = zip_yearly_bin(bin_path)
-        zip_mb = zip_path.stat().st_size / (1024 * 1024)
-        print(f"[{label}] zipped -> {zip_path.name} ({zip_mb:,.1f} MB)")
-        tag = f"{instrument.symbol}-{label}"
-        release = get_or_create_release(
-            repo, tag, token, name=f"{instrument.symbol} {label} tick data"
+        return resolve_bot_token(), resolve_chat_id()
+    except TelegramNotifyError as exc:
+        raise SystemExit(f"error: {exc}")
+
+
+def _process_pack(
+    args, token, repo, tg_token, tg_chat, instrument, start, end, bin_path
+) -> bool:
+    """Zip one merged pack, then upload it to a GitHub release and/or send it
+    to a Telegram channel (whichever was requested)."""
+    label = pack_label(start, end)
+    zip_path = zip_yearly_bin(bin_path)
+    zip_mb = zip_path.stat().st_size / (1024 * 1024)
+    print(f"[{label}] zipped -> {zip_path.name} ({zip_mb:,.1f} MB)")
+
+    ok = True
+    download_url = None
+    if args.upload_release:
+        from export.github_release import (
+            ReleaseUploadError,
+            get_or_create_release,
+            upload_asset,
         )
-        url = upload_asset(repo, release, zip_path, token)
-        print(f"[{label}] uploaded -> {url or 'release ' + tag}\n")
-        return True
-    except ReleaseUploadError as exc:
-        print(f"[{label}] error: release upload failed: {exc}\n", file=sys.stderr)
-        return False
+
+        tag = f"{instrument.symbol}-{label}"
+        try:
+            release = get_or_create_release(
+                repo, tag, token, name=f"{instrument.symbol} {label} tick data"
+            )
+            download_url = upload_asset(repo, release, zip_path, token)
+            print(f"[{label}] uploaded -> {download_url or 'release ' + tag}")
+        except ReleaseUploadError as exc:
+            ok = False
+            print(f"[{label}] error: release upload failed: {exc}", file=sys.stderr)
+
+    if args.notify_telegram:
+        from export.telegram_notify import TelegramNotifyError, notify_pack
+
+        caption = f"📊 {instrument.symbol} — {label}\n📦 {zip_path.name} ({zip_mb:,.1f} MB)"
+        try:
+            mode = notify_pack(tg_token, tg_chat, zip_path, caption, download_url)
+            print(f"[{label}] telegram -> {mode}")
+        except TelegramNotifyError as exc:
+            ok = False
+            print(f"[{label}] error: telegram notify failed: {exc}", file=sys.stderr)
+    print()
+    return ok
 
 
 def _run_download_yearly(settings: Settings, instrument: Instrument, args) -> int:
     """Download a range one calendar year at a time, merging each finished
     chunk into a pack under data/yearly/ and optionally publishing it."""
-    token = repo = None
+    token = repo = tg_token = tg_chat = None
     if args.upload_release:
         token, repo = _release_credentials(args)
+    if args.notify_telegram:
+        tg_token, tg_chat = _telegram_credentials(args)
 
     storage = TickStorage(settings.data_dir)
     out_dir = yearly_output_dir(settings.data_dir)
@@ -295,9 +336,10 @@ def _run_download_yearly(settings: Settings, instrument: Instrument, args) -> in
               f"({tick_count:,} ticks, {size_mb:,.1f} MB)")
         merged.append(bin_path)
 
-        if args.upload_release:
-            if not _publish_pack(
-                args, token, repo, instrument, year_start, year_end, bin_path
+        if args.upload_release or args.notify_telegram:
+            if not _process_pack(
+                args, token, repo, tg_token, tg_chat,
+                instrument, year_start, year_end, bin_path,
             ):
                 failed = True
 
@@ -315,19 +357,21 @@ def cmd_download(settings: Settings, catalog: InstrumentCatalog, args) -> int:
     if args.yearly:
         return _run_download_yearly(settings, instrument, args)
 
-    token = repo = None
+    token = repo = tg_token = tg_chat = None
     if args.upload_release:
         token, repo = _release_credentials(args)
     elif args.repo:
         print("warning: --repo is ignored without --upload-release.",
               file=sys.stderr)
+    if args.notify_telegram:
+        tg_token, tg_chat = _telegram_credentials(args)
 
     rc = _run_download(settings, instrument, args.start, args.end, args)
-    if not args.upload_release:
+    if not (args.upload_release or args.notify_telegram):
         return rc
 
     # Daily / monthly / arbitrary ranges: merge the downloaded range into one
-    # pack and upload it to a GitHub release.
+    # pack, then upload to a GitHub release and/or notify Telegram.
     storage = TickStorage(settings.data_dir)
     result = merge_range(
         storage, instrument, args.start, args.end,
@@ -341,8 +385,8 @@ def cmd_download(settings: Settings, catalog: InstrumentCatalog, args) -> int:
     print(f"Merged -> {bin_path.name} ({tick_count:,} ticks, {size_mb:,.1f} MB)")
     if rc:
         print("warning: some hours failed — the pack covers completed hours only.")
-    if not _publish_pack(args, token, repo, instrument,
-                         args.start, args.end, bin_path):
+    if not _process_pack(args, token, repo, tg_token, tg_chat,
+                         instrument, args.start, args.end, bin_path):
         return 1
     return rc
 
