@@ -2,7 +2,7 @@
 
     python main.py search <text>
     python main.py download <SYMBOL> <START> <END> [--workers N] [--force] [--profile]
-    python main.py download <SYMBOL> <START> <END> --yearly [--upload-release] [--repo owner/name]
+                            [--yearly] [--upload-release] [--repo owner/name]
     python main.py gaps     <SYMBOL> <START> <END> [--repair]
     python main.py gaps     <SYMBOL> --all [--repair]
     python main.py status   <SYMBOL>
@@ -25,7 +25,7 @@ from core.services.gap_scanner import GapScanner
 from core.services.instrument_search import InstrumentCatalog, UnknownInstrumentError
 from core.services.planner import Planner
 from core.services.profile_format import format_profile_line
-from export.yearly import merge_year, yearly_output_dir, zip_yearly_bin
+from export.yearly import merge_range, pack_label, yearly_output_dir, zip_yearly_bin
 from storage.metadata_db import MetadataDB, _hour_key
 from storage.tick_storage import TickStorage
 
@@ -68,14 +68,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_download.add_argument(
         "--yearly", action="store_true",
-        help="split the range into calendar years; after each year completes, "
-             "merge its hour files into one data/yearly/<SYMBOL>_<YEAR>.BIN",
+        help="process a multi-year range one calendar year at a time "
+             "(one merged pack per year)",
     )
     p_download.add_argument(
         "--upload-release", action="store_true",
-        help="with --yearly: zip each yearly BIN and upload it to a GitHub "
-             "release (tag <SYMBOL>-<YEAR>); needs GITHUB_TOKEN plus --repo "
-             "or GITHUB_REPOSITORY",
+        help="after downloading, merge the downloaded range into one BIN pack, "
+             "zip it and upload it to a GitHub release (tag <SYMBOL>-<period>); "
+             "needs GITHUB_TOKEN plus --repo or GITHUB_REPOSITORY",
     )
     p_download.add_argument(
         "--repo", default=None,
@@ -214,23 +214,51 @@ def _run_download(
     return 0
 
 
+def _release_credentials(args):
+    """Resolve and validate GitHub release credentials before downloading."""
+    from export.github_release import (
+        ReleaseUploadError,
+        resolve_repository,
+        resolve_token,
+    )
+
+    try:
+        return resolve_token(), resolve_repository(args.repo)
+    except ReleaseUploadError as exc:
+        raise SystemExit(f"error: {exc}")
+
+
+def _publish_pack(args, token, repo, instrument, start, end, bin_path) -> bool:
+    """Zip one merged pack and upload it to its GitHub release."""
+    from export.github_release import (
+        ReleaseUploadError,
+        get_or_create_release,
+        upload_asset,
+    )
+
+    label = pack_label(start, end)
+    try:
+        zip_path = zip_yearly_bin(bin_path)
+        zip_mb = zip_path.stat().st_size / (1024 * 1024)
+        print(f"[{label}] zipped -> {zip_path.name} ({zip_mb:,.1f} MB)")
+        tag = f"{instrument.symbol}-{label}"
+        release = get_or_create_release(
+            repo, tag, token, name=f"{instrument.symbol} {label} tick data"
+        )
+        url = upload_asset(repo, release, zip_path, token)
+        print(f"[{label}] uploaded -> {url or 'release ' + tag}\n")
+        return True
+    except ReleaseUploadError as exc:
+        print(f"[{label}] error: release upload failed: {exc}\n", file=sys.stderr)
+        return False
+
+
 def _run_download_yearly(settings: Settings, instrument: Instrument, args) -> int:
-    """Download a range one calendar year at a time, merging each finished year
-    into data/yearly/<SYMBOL>_<YEAR>.BIN and optionally publishing it."""
+    """Download a range one calendar year at a time, merging each finished
+    chunk into a pack under data/yearly/ and optionally publishing it."""
     token = repo = None
     if args.upload_release:
-        # Validate release credentials before starting hours of downloading.
-        from export.github_release import (
-            ReleaseUploadError,
-            resolve_repository,
-            resolve_token,
-        )
-
-        try:
-            token = resolve_token()
-            repo = resolve_repository(args.repo)
-        except ReleaseUploadError as exc:
-            raise SystemExit(f"error: {exc}")
+        token, repo = _release_credentials(args)
 
     storage = TickStorage(settings.data_dir)
     out_dir = yearly_output_dir(settings.data_dir)
@@ -246,38 +274,21 @@ def _run_download_yearly(settings: Settings, instrument: Instrument, args) -> in
         if _run_download(settings, instrument, year_start, year_end, args):
             failed = True
 
-        result = merge_year(storage, instrument, year, out_dir)
+        result = merge_range(storage, instrument, year_start, year_end, out_dir)
         if result is None:
             print(f"[{year}] no stored hours — skipping merge.\n")
             continue
         bin_path, tick_count = result
         size_mb = bin_path.stat().st_size / (1024 * 1024)
-        print(f"[{year}] merged -> {bin_path.name} "
+        print(f"[{pack_label(year_start, year_end)}] merged -> {bin_path.name} "
               f"({tick_count:,} ticks, {size_mb:,.1f} MB)")
         merged.append(bin_path)
 
         if args.upload_release:
-            from export.github_release import (
-                ReleaseUploadError,
-                get_or_create_release,
-                upload_asset,
-            )
-
-            try:
-                zip_path = zip_yearly_bin(bin_path)
-                zip_mb = zip_path.stat().st_size / (1024 * 1024)
-                print(f"[{year}] zipped -> {zip_path.name} ({zip_mb:,.1f} MB)")
-                tag = f"{instrument.symbol}-{year}"
-                release = get_or_create_release(
-                    repo, tag, token,
-                    name=f"{instrument.symbol} {year} tick data",
-                )
-                url = upload_asset(repo, release, zip_path, token)
-                print(f"[{year}] uploaded -> {url or 'release ' + tag}\n")
-            except ReleaseUploadError as exc:
+            if not _publish_pack(
+                args, token, repo, instrument, year_start, year_end, bin_path
+            ):
                 failed = True
-                print(f"[{year}] error: release upload failed: {exc}\n",
-                      file=sys.stderr)
 
     print(f"\nYearly summary ({len(merged)} pack(s) in {out_dir}):")
     for path in merged:
@@ -290,12 +301,39 @@ def cmd_download(settings: Settings, catalog: InstrumentCatalog, args) -> int:
     _validate_range(args.start, args.end)
     print(f"Instrument : {instrument.name} ({instrument.symbol}), "
           f"{instrument.price_decimals} decimals")
-    if not args.yearly:
-        if args.upload_release or args.repo:
-            print("warning: --upload-release/--repo only apply together with "
-                  "--yearly; ignoring them.", file=sys.stderr)
-        return _run_download(settings, instrument, args.start, args.end, args)
-    return _run_download_yearly(settings, instrument, args)
+    if args.yearly:
+        return _run_download_yearly(settings, instrument, args)
+
+    token = repo = None
+    if args.upload_release:
+        token, repo = _release_credentials(args)
+    elif args.repo:
+        print("warning: --repo is ignored without --upload-release.",
+              file=sys.stderr)
+
+    rc = _run_download(settings, instrument, args.start, args.end, args)
+    if not args.upload_release:
+        return rc
+
+    # Daily / monthly / arbitrary ranges: merge the downloaded range into one
+    # pack and upload it to a GitHub release.
+    storage = TickStorage(settings.data_dir)
+    result = merge_range(
+        storage, instrument, args.start, args.end,
+        yearly_output_dir(settings.data_dir),
+    )
+    if result is None:
+        print("No stored hours in this range — nothing to pack.")
+        return rc
+    bin_path, tick_count = result
+    size_mb = bin_path.stat().st_size / (1024 * 1024)
+    print(f"Merged -> {bin_path.name} ({tick_count:,} ticks, {size_mb:,.1f} MB)")
+    if rc:
+        print("warning: some hours failed — the pack covers completed hours only.")
+    if not _publish_pack(args, token, repo, instrument,
+                         args.start, args.end, bin_path):
+        return 1
+    return rc
 
 
 def cmd_gaps(settings: Settings, catalog: InstrumentCatalog, args) -> int:
