@@ -164,8 +164,12 @@ plan hours -> fetch JETTA JSON (parallel) -> decode -> verify -> .bin (atomic)
   and progress is never lost.
 - **Retry manager**: exponential backoff with jitter for network errors and
   5xx responses; corrupt payloads (JSON/structure/verification failures)
-  trigger a fresh fetch. Hours that still fail get extra retry rounds, then
-  remain flagged for `gaps --repair`. Temporary failures never abort a run.
+  trigger a fresh fetch. **HTTP 429 (rate limited)** gets its own policy: more
+  attempts with long backoff (5s → 120s), honouring the server's `Retry-After`
+  header, and longer pauses (1–2 min) between retry rounds when a round is
+  mostly 429s. Hours that still fail remain flagged for `gaps --repair` —
+  lowering `--workers` avoids 429s altogether. Temporary failures never abort
+  a run.
 - **Planner** clamps ranges to each instrument's earliest available data and
   skips the not-yet-published most recent hours. Hours with no tick data are
   recorded as empty after an empty JETTA response.

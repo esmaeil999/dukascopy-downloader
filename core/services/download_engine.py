@@ -26,13 +26,44 @@ from core.services.http_client import (
     worker_session,
 )
 from core.services.progress import ProgressBar
-from core.services.retry_manager import PermanentError, RetryableError, RetryManager
+from core.services.retry_manager import (
+    PermanentError,
+    RateLimitError,
+    RetryableError,
+    RetryManager,
+)
 from core.services.verification import verify_batch
 from storage.metadata_db import MetadataDB
 from storage.tick_storage import TickStorage
 
 _RETRYABLE_HTTP = {408, 425, 429, 500, 502, 503, 504}
 _PROFILE_RECENT_LIMIT = 80
+
+
+def _retry_after_seconds(response: requests.Response) -> float | None:
+    """Parse the Retry-After header (seconds form) when present."""
+    value = response.headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return None  # HTTP-date form: fall back to exponential backoff
+
+
+def _between_rounds_delay(round_number: int, failed_tasks: list[HourTask]) -> float:
+    """Pause before a retry round.
+
+    When at least half of the failed hours hit HTTP 429, the server is rate
+    limiting us — wait minutes, not seconds.
+    """
+    if failed_tasks:
+        rate_limited = sum(
+            1 for task in failed_tasks if (task.error or "").startswith("HTTP 429")
+        )
+        if rate_limited * 2 >= len(failed_tasks):
+            return min(120.0, 60.0 * round_number)
+    return min(15.0, 3.0 * round_number)
 
 
 def _profile_entry(task: HourTask) -> dict:
@@ -110,6 +141,8 @@ class DownloadEngine:
             return response.content, fetch_ms
         if status == 404:
             return None, fetch_ms
+        if status == 429:
+            raise RateLimitError("HTTP 429", _retry_after_seconds(response))
         if status in _RETRYABLE_HTTP:
             raise RetryableError(f"HTTP {status}")
         raise PermanentError(f"HTTP {status}")
@@ -220,7 +253,7 @@ class DownloadEngine:
                 retry_tasks = stats.failed_tasks
                 stats.failed_tasks = []
                 stats.failed = 0
-                time.sleep(min(15.0, 3.0 * round_number))
+                time.sleep(_between_rounds_delay(round_number, retry_tasks))
                 if not quiet:
                     print(f"Retry round {round_number}: {len(retry_tasks)} failed hour(s)")
                 retry_stats = self._run_pass(
