@@ -172,6 +172,30 @@ def cmd_search(catalog: InstrumentCatalog, args) -> int:
     return 0
 
 
+def _error_bucket(error: str | None) -> str:
+    """Group similar errors so the failure summary stays readable."""
+    if not error:
+        return "unknown error"
+    for prefix in ("network error", "verification failed", "invalid JSON"):
+        if error.startswith(prefix):
+            return prefix + " (…)"
+    if error.startswith("HTTP "):
+        return error.split(":", 1)[0]
+    return error[:80]
+
+
+def _print_failure_breakdown(failed_tasks) -> None:
+    """Show what the failed hours actually failed with (counts by cause)."""
+    from collections import Counter
+
+    counts = Counter(_error_bucket(task.error) for task in failed_tasks)
+    if not counts:
+        return
+    print("\nFailure breakdown (hours × cause):")
+    for cause, count in counts.most_common(10):
+        print(f"  {count:>5} × {cause}")
+
+
 def _run_download(
     settings: Settings,
     instrument: Instrument,
@@ -225,6 +249,7 @@ def _run_download(
     print(f"\nDone: {stats.completed} hours with data, {stats.empty} empty, "
           f"{stats.failed} failed, {stats.ticks:,} ticks total.")
     if stats.failed:
+        _print_failure_breakdown(stats.failed_tasks)
         print("Some hours kept failing; run later:\n"
               f"  python main.py gaps {instrument.symbol} {start} {end} --repair")
         return 1
